@@ -1,0 +1,56 @@
+name: Build Minimal Debian Chroot for KernelSU (arm64)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-chroot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap qemu-user-static binfmt-support
+
+      - name: Create Debian chroot (arm64)
+        run: |
+          sudo debootstrap \
+            --arch=arm64 \
+            --variant=minbase \
+            --include=sudo,adduser \
+            --foreign \
+            unstable \
+            ./debian-chroot \
+            http://deb.debian.org/debian/
+
+          sudo mkdir -p ./debian-chroot/usr/bin
+          sudo cp /usr/bin/qemu-aarch64-static ./debian-chroot/usr/bin/
+
+          sudo chroot ./debian-chroot /bin/bash -c "/debootstrap/debootstrap --second-stage"
+
+      - name: Configure user and sudo inside chroot
+        run: |
+          sudo chroot ./debian-chroot /bin/bash -c "
+            useradd -m -s /bin/bash user && \
+            echo 'user:password' | chpasswd && \
+            echo 'user ALL=(ALL:ALL) ALL' >> /etc/sudoers
+          "
+
+      - name: Copy files into chroot (Optional)
+        run: |
+          # mkdir -p ./debian-chroot/root/
+          # cp ./my-script.sh ./debian-chroot/root/
+          echo "No extra files to copy."
+
+      - name: Compress chroot as artifact
+        run: |
+          sudo tar -czf debian-chroot-arm64.tar.gz -C ./debian-chroot .
+
+      - name: Upload chroot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-chroot-arm64
+          path: debian-chroot-arm64.tar.gz
