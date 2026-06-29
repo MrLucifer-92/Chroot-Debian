@@ -1,56 +1,64 @@
-name: Build Minimal Debian Chroot for KernelSU (arm64)
+name: Build Debian RootFS for ARM64
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-chroot:
+  build-rootfs:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (optional)
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install required tools
         run: |
           sudo apt-get update
           sudo apt-get install -y debootstrap qemu-user-static binfmt-support
 
-      - name: Create Debian chroot (arm64)
+      - name: Create Debian root filesystem
         run: |
-          sudo debootstrap \
-            --arch=arm64 \
-            --variant=minbase \
-            --include=sudo,adduser \
-            --foreign \
-            unstable \
-            ./debian-chroot \
-            http://deb.debian.org/debian/
+          ROOTFS_DIR="${{ github.workspace }}/debian-arm64-rootfs"
+          DEBIAN_RELEASE="bookworm"
+          DEBIAN_MIRROR="http://deb.debian.org/debian/"
 
-          sudo mkdir -p ./debian-chroot/usr/bin
-          sudo cp /usr/bin/qemu-aarch64-static ./debian-chroot/usr/bin/
+          # Stage 1: Foreign bootstrap (no configuration scripts executed)
+          sudo debootstrap --arch=arm64 --foreign --variant=minbase \
+            $DEBIAN_RELEASE $ROOTFS_DIR $DEBIAN_MIRROR
 
-          sudo chroot ./debian-chroot /bin/bash -c "/debootstrap/debootstrap --second-stage"
+          # Copy qemu emulator into rootfs to run arm64 binaries on amd64
+          sudo mkdir -p $ROOTFS_DIR/usr/bin
+          sudo cp /usr/bin/qemu-aarch64-static $ROOTFS_DIR/usr/bin/
 
-      - name: Configure user and sudo inside chroot
-        run: |
-          sudo chroot ./debian-chroot /bin/bash -c "
-            useradd -m -s /bin/bash user && \
-            echo 'user:password' | chpasswd && \
-            echo 'user ALL=(ALL:ALL) ALL' >> /etc/sudoers
+          # Stage 2: Finalize bootstrap inside the emulated arm64 environment
+          sudo chroot $ROOTFS_DIR /usr/bin/qemu-aarch64-static /bin/bash \
+            /debootstrap/debootstrap --second-stage
+
+          # Install sudo and other essential packages
+          sudo chroot $ROOTFS_DIR /usr/bin/qemu-aarch64-static /bin/bash -c "
+            apt-get update
+            apt-get install -y sudo
+            apt-get install -y vim nano curl wget
           "
 
-      - name: Copy files into chroot (Optional)
-        run: |
-          # mkdir -p ./debian-chroot/root/
-          # cp ./my-script.sh ./debian-chroot/root/
-          echo "No extra files to copy."
+          # Configure sudoers to allow members of the 'sudo' group to run any command
+          echo '%sudo ALL=(ALL:ALL) ALL' | sudo tee $ROOTFS_DIR/etc/sudoers.d/sudo-group
+          sudo chmod 440 $ROOTFS_DIR/etc/sudoers.d/sudo-group
 
-      - name: Compress chroot as artifact
-        run: |
-          sudo tar -czf debian-chroot-arm64.tar.gz -C ./debian-chroot .
+          # Create a standard non-root user with sudo privileges
+          sudo chroot $ROOTFS_DIR /usr/bin/qemu-aarch64-static /bin/bash -c "
+            useradd -m -G sudo -s /bin/bash user
+            echo 'user:123456' | chpasswd
+          "
 
-      - name: Upload chroot artifact
+          # Cleanup: remove qemu emulator from final rootfs to reduce size
+          sudo rm $ROOTFS_DIR/usr/bin/qemu-aarch64-static
+
+          # Optional: add a version file to identify the build
+          echo "Debian $DEBIAN_RELEASE (arm64) - Built with GitHub Actions" | sudo tee $ROOTFS_DIR/version.txt
+
+      - name: Upload RootFS as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: debian-chroot-arm64
-          path: debian-chroot-arm64.tar.gz
+          name: debian-arm64-rootfs
+          path: debian-arm64-rootfs/
