@@ -22,38 +22,49 @@ jobs:
           DEBIAN_RELEASE="bookworm"
           DEBIAN_MIRROR="http://deb.debian.org/debian/"
 
+          # Stage 1: foreign bootstrap
           sudo debootstrap --arch=arm64 --foreign --variant=minbase \
             $DEBIAN_RELEASE $ROOTFS_DIR $DEBIAN_MIRROR
 
+          # Copy qemu emulator
           sudo mkdir -p $ROOTFS_DIR/usr/bin
           sudo cp /usr/bin/qemu-aarch64-static $ROOTFS_DIR/usr/bin/
 
+          # Stage 2: finalize
           sudo chroot $ROOTFS_DIR /usr/bin/qemu-aarch64-static /bin/bash \
             /debootstrap/debootstrap --second-stage
 
+          # Install sudo and useful packages
           sudo chroot $ROOTFS_DIR /usr/bin/qemu-aarch64-static /bin/bash -c "
             apt-get update
             apt-get install -y sudo
             apt-get install -y vim nano curl wget
           "
 
+          # Configure sudoers
           echo '%sudo ALL=(ALL:ALL) ALL' | sudo tee $ROOTFS_DIR/etc/sudoers.d/sudo-group
           sudo chmod 440 $ROOTFS_DIR/etc/sudoers.d/sudo-group
 
+          # Create a non-root user with sudo privileges
           sudo chroot $ROOTFS_DIR /usr/bin/qemu-aarch64-static /bin/bash -c "
             useradd -m -G sudo -s /bin/bash user
             echo 'user:123456' | chpasswd
           "
 
+          # Remove qemu emulator (no longer needed)
           sudo rm $ROOTFS_DIR/usr/bin/qemu-aarch64-static
+
+          # Add a version file
           echo "Debian $DEBIAN_RELEASE (arm64) - Built with GitHub Actions" | sudo tee $ROOTFS_DIR/version.txt
 
-      - name: Fix permissions for artifact upload
+      - name: Create tarball of the rootfs (avoids permission issues)
         run: |
-          sudo chmod 755 ${{ github.workspace }}/debian-arm64-rootfs/etc/ssl/private
+          cd ${{ github.workspace }}
+          # Use tar with --xattrs to preserve all attributes, but we'll just archive the contents
+          sudo tar -czf debian-arm64-rootfs.tar.gz -C debian-arm64-rootfs .
 
-      - name: Upload RootFS as artifact
+      - name: Upload tarball as artifact
         uses: actions/upload-artifact@v4
         with:
           name: debian-arm64-rootfs
-          path: debian-arm64-rootfs/
+          path: debian-arm64-rootfs.tar.gz
